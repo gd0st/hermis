@@ -1,0 +1,6 @@
+{
+	"sources": [
+		"https://feeds.a.dj.com/rss/RSSWorldNews.xml",
+		"https://rss.nytimes.com/services/xml/rss/nyt/Africa.xml"
+	]
+}
