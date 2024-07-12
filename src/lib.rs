@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::{fs::OpenOptions, io};
 
 #[derive(Serialize, Deserialize, Debug)]
+///! todo!()
+/// Allow weights to sources, favorite authors etc
 pub struct Config {
     sources: Vec<String>,
 }
@@ -97,6 +99,18 @@ impl Feed {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    // pub fn iter(&self) -> impl Iterator<Item = &Article> {
+    //     self.articles.iter()
+    // }
+}
+
+impl Iterator for Feed {
+    type Item = Article;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.articles.pop()
     }
 }
 
