@@ -1,6 +1,16 @@
 {
 	"sources": [
-		"https://feeds.a.dj.com/rss/RSSWorldNews.xml",
-		"https://rss.nytimes.com/services/xml/rss/nyt/Africa.xml"
-	]
+		{
+			"link": "https://feeds.a.dj.com/rss/RSSWorldNews.xml"
+		},
+		{
+			"link": "https://rss.nytimes.com/services/xml/rss/nyt/Africa.xml",
+			"weight": 10
+		},
+		{
+			"link": "https://www.wired.com/feed/category/business/latest/rss"
+		}
+	],
+	"page_size": 20,
+	"seed": "Marty"
 }

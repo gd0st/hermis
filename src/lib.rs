@@ -1,18 +1,52 @@
 use anyhow;
+use rand::{self, thread_rng, Rng};
 use reqwest::blocking::{self, Client, ClientBuilder};
 use rss::{self, Channel, ChannelBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json;
+
 use std::io::{BufReader, Read};
+use std::os::unix::thread;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use std::{fs::OpenOptions, io};
+
+enum Hopper {
+    Weighted(Vec<Feed>),
+    Linear(Vec<Feed>),
+}
+
+pub fn spread_weight<'a>(feeds: Vec<&Article>) -> Vec<usize> {
+    let mut dartboard = vec![];
+
+    for (i, article) in feeds.iter().enumerate() {
+        let weight = article.weight;
+        for j in (0..weight) {
+            dartboard.push(i)
+        }
+    }
+
+    dartboard
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Source {
+    link: String,
+    weight: Option<usize>,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 ///! todo!()
 /// Allow weights to sources, favorite authors etc
 pub struct Config {
-    sources: Vec<String>,
+    sources: Vec<Source>,
+    pub page_size: Option<usize>,
+    pub seed: Option<String>,
+}
+
+fn binary_weighted_search(elements: Vec<&Article>) -> anyhow::Result<(usize, usize)> {
+    Ok((0, 0))
 }
 
 impl Config {
@@ -35,13 +69,27 @@ impl Config {
         let mut feeds = vec![];
 
         for source in self.sources.iter() {
-            let res = client.get(source).send()?.text()?;
+            let weight = match source.weight {
+                Some(weight) => weight,
+                None => 1,
+            };
+            let res = client.get(&source.link).send()?.text()?;
             let reader = BufReader::new(res.as_bytes());
             let channel = Channel::read_from(reader)?;
-            let articles: Vec<Article> = channel.items().iter().map(Article::from).collect();
+            let articles: Vec<Article> = channel
+                .items()
+                .iter()
+                .map(|item| {
+                    let mut article = Article::from(item);
+                    article.weight = weight;
+                    article
+                })
+                .collect();
+
             feeds.push(Feed {
                 name: channel.title().to_string(),
                 articles,
+                weight,
             })
         }
         Ok(feeds)
@@ -57,10 +105,56 @@ impl TryFrom<PathBuf> for Config {
     }
 }
 
+#[derive(Default)]
+pub struct ArticleBuilder {
+    title: String,
+    description: String,
+    url: String,
+    weight: usize,
+}
+
+// TODO feels somewhat useless
+impl ArticleBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn title(mut self, title: &str) -> Self {
+        self.title = title.to_string();
+        self
+    }
+
+    pub fn description(mut self, description: &str) -> Self {
+        self.description = description.to_string();
+        self
+    }
+
+    pub fn url(mut self, url: String) -> Self {
+        self.url = url;
+        self
+    }
+
+    pub fn weight(mut self, weight: usize) -> Self {
+        self.weight = weight;
+        self
+    }
+
+    pub fn build(self) -> Article {
+        Article {
+            title: self.title,
+            description: self.description,
+            url: self.url,
+            weight: self.weight,
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct Article {
     title: String,
     description: String,
     url: String,
+    weight: usize,
 }
 
 impl Article {
@@ -83,6 +177,7 @@ impl From<&rss::Item> for Article {
             title: value.title().unwrap_or("default").to_string(),
             description: value.description().unwrap_or("default").to_string(),
             url: value.link().unwrap_or("https://example.org").to_string(),
+            weight: 0,
         }
     }
 }
@@ -90,6 +185,17 @@ impl From<&rss::Item> for Article {
 pub struct Feed {
     name: String,
     articles: Vec<Article>,
+    weight: usize,
+}
+
+impl Default for Feed {
+    fn default() -> Self {
+        Feed {
+            name: "".to_string(),
+            articles: vec![],
+            weight: 1,
+        }
+    }
 }
 
 impl Feed {
@@ -100,10 +206,6 @@ impl Feed {
     pub fn name(&self) -> &str {
         &self.name
     }
-
-    // pub fn iter(&self) -> impl Iterator<Item = &Article> {
-    //     self.articles.iter()
-    // }
 }
 
 impl Iterator for Feed {
@@ -121,7 +223,7 @@ impl TryFrom<Config> for Vec<Feed> {
         let client = Client::default();
 
         for source in value.sources {
-            if let Ok(blob) = client.get(source).send() {
+            if let Ok(blob) = client.get(&source.link).send() {
                 let buff = BufReader::new(blob.text()?.as_bytes());
             }
         }
