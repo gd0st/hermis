@@ -1,44 +1,20 @@
-pub mod bst;
 use anyhow;
-
-use bst::Node;
-use rand::seq::IteratorRandom;
-use rand::seq::SliceRandom;
-use rand::Rng;
-use rand_pcg::Pcg64;
 use reqwest::blocking::Client;
 use rss::{self, Channel};
 use serde::{Deserialize, Serialize};
 use serde_json;
 
-use std::cell::RefCell;
 use std::io::BufReader;
 use std::path::PathBuf;
 
 use std::{fs::OpenOptions, io};
 
-pub fn collect_articles(mut feeds: Vec<Feed>, count: usize, rng: &mut Pcg64) -> Vec<&Article> {
-    let mut articles = vec![];
-    let mut cell = RefCell::new(feeds);
-    articles
-}
-
-pub fn spread_weight<T: Weighted>(feeds: Vec<&T>) -> Vec<usize> {
-    let mut dartboard = vec![];
-    for (i, article) in feeds.iter().enumerate() {
-        let weight = article.weight();
-        for j in (0..weight) {
-            dartboard.push(i)
-        }
-    }
-
-    dartboard
-}
+const DEFAULT_SEED: &str = "skibbidytoilet";
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Source {
     link: String,
-    weight: Option<usize>,
+    weight: Option<isize>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -46,26 +22,9 @@ struct Source {
 /// Allow weights to sources, favorite authors etc
 pub struct Config {
     sources: Vec<Source>,
-    pub page_size: Option<usize>,
-    pub seed: Option<String>,
-}
-
-fn binary_weighted_search(elements: Vec<&mut Feed>) -> anyhow::Result<(usize, usize)> {
-    // Make an array with the sums of all weights,
-    let mut summed_weights = vec![];
-    for (i, feed) in elements.iter().enumerate() {
-        if i == 0 {
-            summed_weights.push(feed.weight);
-            continue;
-        }
-        summed_weights.push(feed.weight + elements[i - 1].weight);
-    }
-    Ok((0, 0))
-}
-
-pub fn reweigh(mut feed: Feed, weight: usize) -> Feed {
-    feed.weight = weight;
-    feed
+    page_size: Option<usize>,
+    seed: Option<String>,
+    limit: Option<usize>,
 }
 
 impl Config {
@@ -81,6 +40,18 @@ impl Config {
             config
         }
         None
+    }
+
+    pub fn limit(&self) -> usize {
+        self.limit.unwrap_or(10)
+    }
+
+    pub fn seed(&self) -> &str {
+        if let Some(seed) = &self.seed {
+            seed.as_str()
+        } else {
+            DEFAULT_SEED
+        }
     }
     pub fn parse_feeds(&self) -> anyhow::Result<Vec<Feed>> {
         let client = Client::default();
@@ -100,7 +71,7 @@ impl Config {
                 .iter()
                 .map(|item| {
                     let mut article = Article::from(item);
-                    article.weight = weight;
+                    article.weight = weight as i32;
                     article
                 })
                 .collect();
@@ -108,7 +79,7 @@ impl Config {
             feeds.push(Feed {
                 name: channel.title().to_string(),
                 articles,
-                weight,
+                weight: weight as i32,
             })
         }
         Ok(feeds)
@@ -129,7 +100,7 @@ pub struct ArticleBuilder {
     title: String,
     description: String,
     url: String,
-    weight: usize,
+    weight: i32,
 }
 
 // TODO feels somewhat useless
@@ -153,7 +124,7 @@ impl ArticleBuilder {
         self
     }
 
-    pub fn weight(mut self, weight: usize) -> Self {
+    pub fn weight(mut self, weight: i32) -> Self {
         self.weight = weight;
         self
     }
@@ -173,7 +144,7 @@ pub struct Article {
     title: String,
     description: String,
     url: String,
-    weight: usize,
+    weight: i32,
 }
 
 impl Article {
@@ -188,6 +159,10 @@ impl Article {
     pub fn url(&self) -> &str {
         &self.url
     }
+
+    pub fn weight(&self) -> i32 {
+        self.weight
+    }
 }
 
 impl From<&rss::Item> for Article {
@@ -201,44 +176,11 @@ impl From<&rss::Item> for Article {
     }
 }
 
-trait Weighted {
-    fn weight(&self) -> usize;
-}
-
-impl PartialEq for dyn Weighted {
-    fn eq(&self, other: &Self) -> bool {
-        self.weight().cmp(&other.weight()).is_eq()
-    }
-
-    fn ne(&self, other: &Self) -> bool {
-        self.weight().cmp(&other.weight()).is_ne()
-    }
-}
-impl PartialOrd for dyn Weighted {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.weight().cmp(&other.weight()))
-    }
-
-    fn ge(&self, other: &Self) -> bool {
-        self.weight().cmp(&other.weight()).is_ge()
-    }
-
-    fn gt(&self, other: &Self) -> bool {
-        self.weight().cmp(&other.weight()).is_gt()
-    }
-    fn le(&self, other: &Self) -> bool {
-        self.weight().cmp(&other.weight()).is_le()
-    }
-    fn lt(&self, other: &Self) -> bool {
-        self.weight().cmp(&other.weight()).is_lt()
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Feed {
     name: String,
     articles: Vec<Article>,
-    weight: usize,
+    weight: i32,
 }
 
 impl PartialEq for Feed {
@@ -295,7 +237,11 @@ impl Feed {
         self.articles.iter().collect()
     }
 
-    pub fn set_weight(mut self, weight: usize) -> Self {
+    pub fn weight(&self) -> i32 {
+        self.weight
+    }
+
+    pub fn set_weight(mut self, weight: i32) -> Self {
         self.weight = weight;
         self
     }
