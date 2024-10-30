@@ -1,9 +1,11 @@
 use clap::{self, error::ErrorKind, Parser};
-use hermis::spread_weight;
+use hermis::{reweigh, spread_weight};
+use
 use rand::{self, seq::IteratorRandom, seq::SliceRandom, thread_rng};
 use rand_pcg::Pcg64;
 use rand_seeder;
 use std::rc::Rc;
+use hermis::bst::cfd;
 use std::{fs::OpenOptions, io};
 
 #[derive(clap::Parser, Debug)]
@@ -34,12 +36,18 @@ fn main() -> io::Result<()> {
         println!("> {}", article.url());
     };
 
-    let Ok(feeds) = config.parse_feeds() else {
+    let Ok(mut feeds) = config.parse_feeds() else {
         return Err(std::io::Error::other("foo"));
     };
+    let cfd_weights = cfd(feeds.iter().map(|feed| feed.weight()).collect());
+	feeds = feeds.into_iter().enumerate().map(|(i, feed)| reweigh(feed, cfd_weights[i])).collect();
     let seed = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
     let mut random: Pcg64 =
         rand_seeder::Seeder::from(config.seed.unwrap_or("skibbidytoilet".to_string())).make_rng();
+
+
+	let random_nums = (0..config.page_size.unwrap_or(10)).choose_multiple(&mut random, config.page_size.unwrap_or(10));
+	let articles = feeds.into_iter().map(|feed| feed.into_iter()).flatten().collect();
 
     if args.lucky {
         feeds

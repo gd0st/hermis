@@ -1,27 +1,32 @@
+pub mod bst;
 use anyhow;
-use rand::{self, thread_rng, Rng};
-use reqwest::blocking::{self, Client, ClientBuilder};
-use rss::{self, Channel, ChannelBuilder};
+
+use bst::Node;
+use rand::seq::IteratorRandom;
+use rand::seq::SliceRandom;
+use rand::Rng;
+use rand_pcg::Pcg64;
+use reqwest::blocking::Client;
+use rss::{self, Channel};
 use serde::{Deserialize, Serialize};
 use serde_json;
 
-use std::io::{BufReader, Read};
-use std::os::unix::thread;
+use std::cell::RefCell;
+use std::io::BufReader;
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use std::{fs::OpenOptions, io};
 
-enum Hopper {
-    Weighted(Vec<Feed>),
-    Linear(Vec<Feed>),
+pub fn collect_articles(mut feeds: Vec<Feed>, count: usize, rng: &mut Pcg64) -> Vec<&Article> {
+    let mut articles = vec![];
+    let mut cell = RefCell::new(feeds);
+    articles
 }
 
-pub fn spread_weight<'a>(feeds: Vec<&Article>) -> Vec<usize> {
+pub fn spread_weight<T: Weighted>(feeds: Vec<&T>) -> Vec<usize> {
     let mut dartboard = vec![];
-
     for (i, article) in feeds.iter().enumerate() {
-        let weight = article.weight;
+        let weight = article.weight();
         for j in (0..weight) {
             dartboard.push(i)
         }
@@ -45,8 +50,22 @@ pub struct Config {
     pub seed: Option<String>,
 }
 
-fn binary_weighted_search(elements: Vec<&Article>) -> anyhow::Result<(usize, usize)> {
+fn binary_weighted_search(elements: Vec<&mut Feed>) -> anyhow::Result<(usize, usize)> {
+    // Make an array with the sums of all weights,
+    let mut summed_weights = vec![];
+    for (i, feed) in elements.iter().enumerate() {
+        if i == 0 {
+            summed_weights.push(feed.weight);
+            continue;
+        }
+        summed_weights.push(feed.weight + elements[i - 1].weight);
+    }
     Ok((0, 0))
+}
+
+pub fn reweigh(mut feed: Feed, weight: usize) -> Feed {
+    feed.weight = weight;
+    feed
 }
 
 impl Config {
@@ -105,7 +124,7 @@ impl TryFrom<PathBuf> for Config {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ArticleBuilder {
     title: String,
     description: String,
@@ -149,7 +168,7 @@ impl ArticleBuilder {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Article {
     title: String,
     description: String,
@@ -182,10 +201,83 @@ impl From<&rss::Item> for Article {
     }
 }
 
+trait Weighted {
+    fn weight(&self) -> usize;
+}
+
+impl PartialEq for dyn Weighted {
+    fn eq(&self, other: &Self) -> bool {
+        self.weight().cmp(&other.weight()).is_eq()
+    }
+
+    fn ne(&self, other: &Self) -> bool {
+        self.weight().cmp(&other.weight()).is_ne()
+    }
+}
+impl PartialOrd for dyn Weighted {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.weight().cmp(&other.weight()))
+    }
+
+    fn ge(&self, other: &Self) -> bool {
+        self.weight().cmp(&other.weight()).is_ge()
+    }
+
+    fn gt(&self, other: &Self) -> bool {
+        self.weight().cmp(&other.weight()).is_gt()
+    }
+    fn le(&self, other: &Self) -> bool {
+        self.weight().cmp(&other.weight()).is_le()
+    }
+    fn lt(&self, other: &Self) -> bool {
+        self.weight().cmp(&other.weight()).is_lt()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Feed {
     name: String,
     articles: Vec<Article>,
     weight: usize,
+}
+
+impl PartialEq for Feed {
+    fn eq(&self, other: &Self) -> bool {
+        self.weight == other.weight
+    }
+}
+
+use std::cmp::Ordering;
+impl PartialOrd for Feed {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        if self.weight == other.weight {
+            return Some(Ordering::Equal);
+        }
+
+        if self.weight > other.weight {
+            return Some(Ordering::Greater);
+        }
+
+        if self.weight < other.weight {
+            return Some(Ordering::Less);
+        }
+        None
+    }
+    fn ge(&self, other: &Self) -> bool {
+        self.weight >= other.weight
+    }
+
+    fn gt(&self, other: &Self) -> bool {
+        self.weight > other.weight
+    }
+
+    fn le(&self, other: &Self) -> bool {
+        self.weight <= other.weight
+    }
+
+    fn lt(&self, other: &Self) -> bool {
+        self.weight < other.weight
+    }
 }
 
 impl Default for Feed {
@@ -201,6 +293,11 @@ impl Default for Feed {
 impl Feed {
     pub fn articles(&self) -> Vec<&Article> {
         self.articles.iter().collect()
+    }
+
+    pub fn set_weight(mut self, weight: usize) -> Self {
+        self.weight = weight;
+        self
     }
 
     pub fn name(&self) -> &str {
