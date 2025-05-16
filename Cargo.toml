@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+actix-web = "4.9.0"
 anyhow = "1.0.86"
 clap = { version = "4.5.9", features = ["derive"] }
 itertools = "0.13.0"

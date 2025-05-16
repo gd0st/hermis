@@ -13,7 +13,7 @@ struct Args {
     lucky: bool,
 }
 
-use hermis::{Article, Config};
+use hermis::{seeded_rng, Article, Config};
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let home = std::env::var("HOME").unwrap_or_default().to_string();
@@ -33,7 +33,9 @@ fn main() -> anyhow::Result<()> {
     };
 
     let feeds = config.parse_feeds()?;
-    let mut rng: Pcg64 = rand_seeder::Seeder::from(config.seed()).make_rng();
+
+    let mut rng = seeded_rng(config.seed());
+    //let mut rng: Pcg64 = rand_seeder::Seeder::from(config.seed()).make_rng();
 
     let articles: Vec<Article> = feeds
         .into_iter()

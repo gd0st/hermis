@@ -1,4 +1,8 @@
 use anyhow;
+pub mod web;
+use rand::seq::SliceRandom;
+use rand::{rngs, Rng};
+use rand_pcg::Pcg64;
 use reqwest::blocking::Client;
 use rss::{self, Channel};
 use serde::{Deserialize, Serialize};
@@ -11,13 +15,113 @@ use std::{fs::OpenOptions, io};
 
 const DEFAULT_SEED: &str = "skibbidytoilet";
 
-#[derive(Serialize, Deserialize, Debug)]
-struct Source {
-    link: String,
-    weight: Option<isize>,
+pub fn seeded_rng(seed: &str) -> impl Rng {
+    let rng: Pcg64 = rand_seeder::Seeder::from(seed).make_rng();
+    rng
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+pub fn weighted_collection<'a>(
+    feeds: Vec<&'a Feed>,
+    count: usize,
+    rng: &mut impl Rng,
+) -> anyhow::Result<Vec<&'a Article>> {
+    // holy hell
+    let articles = feeds
+        .iter()
+        .map(|feed| feed.articles(true))
+        .flatten()
+        .collect::<Vec<&Article>>()
+        .choose_multiple_weighted(rng, count, |article| article.weight())?
+        .into_iter()
+        .map(|article| *article)
+        .collect();
+    Ok(articles)
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Source {
+    link: String,
+    weight: Option<isize>,
+    skim: Option<usize>, // How many stories to take off the top
+}
+
+pub async fn parse_sources(sources: Vec<&Source>) -> anyhow::Result<Vec<Feed>> {
+    let client = reqwest::Client::default();
+    let mut feeds = vec![];
+
+    for source in sources.into_iter() {
+        let weight = source.weight.unwrap_or(1);
+        let res = client.get(&source.link).send().await?.text().await?;
+        let reader = BufReader::new(res.as_bytes());
+        let channel = Channel::read_from(reader)?;
+
+        let articles: Vec<Article> = channel
+            .items()
+            .iter()
+            .map(|item| {
+                let mut article = Article::from(item).publisher(channel.title());
+
+                article.weight = weight as i32;
+                article
+            })
+            .collect();
+
+        feeds.push(Feed {
+            name: channel.title().to_string(),
+            articles,
+            weight: weight as i32,
+            skim: source.skim.unwrap_or(20),
+        })
+    }
+    Ok(feeds)
+}
+
+impl Source {
+    pub fn new(link: String) -> Self {
+        Self {
+            link,
+            weight: None,
+            skim: None,
+        }
+    }
+
+    pub fn weight(mut self, weight: isize) -> Self {
+        self.weight = Some(weight);
+        self
+    }
+
+    pub fn skim(mut self, skim: usize) -> Self {
+        self.skim = Some(skim);
+        self
+    }
+}
+
+impl TryFrom<Source> for Feed {
+    type Error = anyhow::Error;
+    fn try_from(source: Source) -> Result<Self, Self::Error> {
+        let config = Config {
+            sources: vec![source],
+            page_size: None,
+            seed: None,
+            limit: None,
+        };
+
+        let mut feed = config.parse_feeds()?;
+        Ok(feed.pop().unwrap())
+    }
+}
+
+impl<'a> From<&'a str> for Source {
+    fn from(link: &'a str) -> Self {
+        Self {
+            link: link.to_string(),
+            weight: None,
+            skim: None,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 ///! todo!()
 /// Allow weights to sources, favorite authors etc
 pub struct Config {
@@ -42,6 +146,10 @@ impl Config {
         None
     }
 
+    pub fn append_source(&mut self, source: Source) {
+        self.sources.push(source);
+    }
+
     pub fn limit(&self) -> usize {
         self.limit.unwrap_or(10)
     }
@@ -52,6 +160,39 @@ impl Config {
         } else {
             DEFAULT_SEED
         }
+    }
+
+    pub async fn async_parse_fetch(&self) -> anyhow::Result<Vec<Feed>> {
+        let client = reqwest::Client::default();
+        let mut feeds = vec![];
+        for source in self.sources.iter() {
+            let weight = match source.weight {
+                Some(weight) => weight,
+                None => 1,
+            };
+
+            let res = client.get(&source.link).send().await?.text().await?;
+            let reader = BufReader::new(res.as_bytes());
+            let channel = Channel::read_from(reader)?;
+            let articles: Vec<Article> = channel
+                .items()
+                .iter()
+                .map(|item| {
+                    let mut article = Article::from(item).publisher(channel.title());
+
+                    article.weight = weight as i32;
+                    article
+                })
+                .collect();
+
+            feeds.push(Feed {
+                name: channel.title().to_string(),
+                articles,
+                weight: weight as i32,
+                skim: source.skim.unwrap_or(20),
+            })
+        }
+        Ok(feeds)
     }
     pub fn parse_feeds(&self) -> anyhow::Result<Vec<Feed>> {
         let client = Client::default();
@@ -80,6 +221,7 @@ impl Config {
                 name: channel.title().to_string(),
                 articles,
                 weight: weight as i32,
+                skim: source.skim.unwrap_or(20),
             })
         }
         Ok(feeds)
@@ -95,61 +237,23 @@ impl TryFrom<PathBuf> for Config {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ArticleBuilder {
-    title: String,
-    description: String,
-    url: String,
-    weight: i32,
-}
-
-// TODO feels somewhat useless
-impl ArticleBuilder {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn title(mut self, title: &str) -> Self {
-        self.title = title.to_string();
-        self
-    }
-
-    pub fn description(mut self, description: &str) -> Self {
-        self.description = description.to_string();
-        self
-    }
-
-    pub fn url(mut self, url: String) -> Self {
-        self.url = url;
-        self
-    }
-
-    pub fn weight(mut self, weight: i32) -> Self {
-        self.weight = weight;
-        self
-    }
-
-    pub fn build(self) -> Article {
-        Article {
-            title: self.title,
-            description: self.description,
-            url: self.url,
-            weight: self.weight,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Article {
     title: String,
     description: String,
     url: String,
     weight: i32,
+    publisher: Option<String>,
 }
 
 impl Article {
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    pub fn publisher(mut self, publisher: &str) -> Self {
+        self.publisher = Some(publisher.to_string());
+        self
     }
 
     pub fn description(&self) -> &str {
@@ -172,15 +276,17 @@ impl From<&rss::Item> for Article {
             description: value.description().unwrap_or("default").to_string(),
             url: value.link().unwrap_or("https://example.org").to_string(),
             weight: 0,
+            publisher: None,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Feed {
     name: String,
     articles: Vec<Article>,
     weight: i32,
+    skim: usize, // how many articles to take
 }
 
 impl PartialEq for Feed {
@@ -228,13 +334,18 @@ impl Default for Feed {
             name: "".to_string(),
             articles: vec![],
             weight: 1,
+            skim: 5,
         }
     }
 }
 
 impl Feed {
-    pub fn articles(&self) -> Vec<&Article> {
-        self.articles.iter().collect()
+    pub fn articles(&self, with_skim: bool) -> Vec<&Article> {
+        if with_skim {
+            self.articles.iter().take(self.skim).collect()
+        } else {
+            self.articles.iter().collect()
+        }
     }
 
     pub fn weight(&self) -> i32 {
